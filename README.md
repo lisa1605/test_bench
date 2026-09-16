@@ -176,30 +176,66 @@ Les features de fuite (`_leak_nb_mesures`, `_leak_nb_programmes`, `_leak_duree_s
 
 ---
 
-## Résultats de modélisation
+## Machine Learning : détection des anomalies moteurs
 
-Comparaison de 4 modèles en validation croisée stratifiée (5 folds), métrique AUC-PR (adaptée au déséquilibre de classes) :
+À partir de la table `gold_lakehouse.gold_fait_test_moteur` construite lors de l'étape Gold, nous avons développé avec **PySpark ML dans Microsoft Fabric** un modèle de classification permettant d'identifier les moteurs potentiellement anormaux.
 
-| Modèle           | AUC-PR          | ROC-AUC         |
-|------------------|-----------------|-----------------|
-| Baseline aléatoire | 0,020         | —               |
-| Régression logistique | 0,338 ± 0,178 | 0,808 ± 0,113 |
-| **Random Forest**    | **0,596 ± 0,168** | **0,963 ± 0,018** |
-| Gradient Boosting | 0,594 ± 0,233  | 0,898 ± 0,117   |
-| Isolation Forest  | 0,086          | 0,827           |
+Le dataset final contient **1 262 moteurs**, dont **25 anomalies (1,98 %)**, représentés par les **60 features numériques** issues du feature engineering réalisé précédemment.
 
-**Modèle retenu : Random Forest** (`class_weight='balanced_subsample'`, 400 estimateurs).
+### Modélisation
 
-Nous avons choisi ce modèle car sa performance est équivalente au Gradient Boosting, sa variance est nettement plus faible entre folds (±0,168 vs ±0,233), et critique avec seulement 25 positifs. Les features les plus discriminantes sont `SPEED_1_std`, `SENSOR_4_std`, `TEMP_1_std`, les moteurs anormaux se distinguent par une instabilité plus grande de leurs signaux, pas par des niveaux moyens différents.
+Le faible nombre d'anomalies entraîne un fort **déséquilibre des classes**. Une pondération est donc appliquée lors de l'entraînement afin d'accorder davantage d'importance aux moteurs anormaux.
 
----
+Les données sont réparties entre :
 
-## Limites et perspectives
+* **1 031 moteurs pour l'entraînement**, dont 19 anomalies ;
+* **231 moteurs pour le test**, dont 6 anomalies.
 
-**Limites identifiées :**
-- 25 cas positifs sur 1 262 : les intervalles de confiance sont larges, la robustesse demanderait davantage de données de défaut.
-- Recouvrement nul entre warranty et les données de test : le lien entre défaillances terrain et mesures de banc n'est pas constructible avec les données fournies.
-- Dimension produit partielle (27/177 produits).
+Quatre modèles de classification sont comparés :
 
-**Évolution vers le streaming (non implémentée) :**
-L'architecture médaillon est nativement compatible avec un passage en temps réel. En production, un flux Kafka alimenterait la couche Bronze en continu, Silver et Gold seraient mis à jour par micro-batch, et le modèle serait réentraîné automatiquement selon une planification (ex. quotidienne à 8h via un pipeline Fabric).
+* Logistic Regression ;
+* Random Forest ;
+* Gradient-Boosted Trees (GBT) ;
+* Linear SVM.
+
+Compte tenu du déséquilibre des données, l'évaluation ne repose pas uniquement sur l'Accuracy. Le **Recall**, la **Precision**, le **F1-score**, le **ROC-AUC** et le **PR-AUC** sont également analysés.
+
+### Choix du modèle
+
+Le **Random Forest** est retenu pour la suite de l'expérimentation. Il présente la meilleure capacité globale de discrimination parmi les modèles testés avec :
+
+* **ROC-AUC : 0,8552**
+* **PR-AUC : 0,3313**
+
+Avec le seuil standard de `0,5`, le modèle ne détecte cependant aucune anomalie. Plusieurs seuils sont donc expérimentés afin d'améliorer la détection de la classe minoritaire.
+
+Un seuil de **0,05** est finalement utilisé afin de privilégier le Recall.
+
+### Résultats
+
+Sur les **231 moteurs du jeu de test**, les résultats obtenus sont :
+
+| Résultat     | Nombre |
+| ------------ | -----: |
+| Vrai positif |      3 |
+| Faux positif |     11 |
+| Vrai négatif |    214 |
+| Faux négatif |      3 |
+
+Le modèle détecte ainsi **3 anomalies sur 6**, soit un **Recall de 50 %**, avec une **Precision de 21,43 %** et un **F1-score de 30 %**.
+
+L'objectif est de privilégier la détection des moteurs suspects, quitte à générer davantage de faux positifs. Les moteurs identifiés comme potentiellement anormaux peuvent ainsi être orientés vers un contrôle complémentaire.
+
+### Sortie du modèle
+
+Pour chaque moteur, le modèle produit :
+
+* la `PROBABILITE_ANOMALIE` ;
+* la `PREDICTION_FINALE` ;
+* le résultat de la classification.
+
+Les prédictions sont mises à disposition dans la table :
+
+`gold_lakehouse.predictions_moteurs`
+
+Cette table constitue la **sortie de l'étape Machine Learning** et sert de point d'entrée à la partie suivante consacrée à la **Data Visualisation**.
