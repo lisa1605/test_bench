@@ -239,3 +239,55 @@ Les prédictions sont mises à disposition dans la table :
 `gold_lakehouse.predictions_moteurs`
 
 Cette table constitue la **sortie de l'étape Machine Learning** et sert de point d'entrée à la partie suivante consacrée à la **Data Visualisation**.
+
+---
+
+## Data Visualisation : rapport Power BI
+
+**Lakehouse source :** `gold_lakehouse`
+**Mode de connexion :** Direct Lake — le modèle sémantique lit directement les tables Delta du Lakehouse Gold, sans duplication ni processus de refresh classique, pour rester cohérent avec l'objectif de passage au temps réel du projet.
+
+### Modèle sémantique
+
+```
+gold_dim_produit ──(1:*)──► gold_fait_test_moteur ──(1:*)──► predictions_moteurs
+```
+
+- `gold_dim_produit` ↔ `gold_fait_test_moteur` : clé `PRODUCT_NUMBER`
+- `gold_fait_test_moteur` ↔ `predictions_moteurs` : clé `SERIAL_NUMBER`
+- `silver_warranty_clean` : non intégrée au modèle (recouvrement nul avec les moteurs testés, documenté en couche Silver)
+
+⚠️ `gold_dim_produit` ne couvre que 27 des 177 produits testés (donnée fournie par le client, limite déjà documentée en couche Gold). Toute analyse croisée par famille de produit dans le rapport ne porte donc que sur ce sous-ensemble partiel.
+
+### Pages du rapport
+
+| # | Page | Contenu |
+|---|---|---|
+| 1 | **Vue d'ensemble** | KPI (moteurs testés : 1 262, taux d'anomalie réel : 1,98 %, moteurs scorés, F1-score du modèle), répartition par `TEST_STAND`, navigation vers la page Data & Limitations |
+| 2 | **Performance du modèle** | Matrice de confusion (VP/FP/FN/VN) au seuil retenu (0,05), indicateurs Recall / Precision / F1-score, distribution de `PROBABILITE_ANOMALIE` avec ligne de seuil, table des faux négatifs (moteurs anormaux non détectés) |
+| 3 | **Exploration produit** *(couverture partielle)* | Avertissement sur la couverture catalogue (27/177), répartition du taux d'anomalie par `GROUP` / `NATURE` / `STATUS` sur le périmètre couvert |
+| 4 | **Détail capteurs** | Nuages de points croisant les capteurs les plus discriminants (issus des feature importances du Random Forest), coloration par `LABEL` |
+| 5 | **Data & Limitations** | Rappel des limites documentées dans le pipeline : couverture catalogue produit, warranty hors périmètre, features `_leak_*` exclues de la modélisation, traçabilité (date de scoring, version du modèle) |
+
+### Mesures DAX principales
+
+- Volumétrie : `Nb Moteurs Testés`, `Nb Moteurs Scorés`, `Taux d'Anomalie Réel`
+- Matrice de confusion : `VP`, `FP`, `FN`, `VN`, `Precision`, `Recall`, `F1-score` (calculées sur `LABEL` vs `PREDICTION_FINALE`)
+- Qualité de données : `Taux de Couverture Catalogue` (= 27/177), `Ecart Taux Anomalie Test vs Prediction`
+
+### Résultats affichés (page 2)
+
+| Résultat | Nombre |
+|---|---|
+| Vrai positif | 3 |
+| Faux positif | 11 |
+| Vrai négatif | 214 |
+| Faux négatif | 3 |
+
+**Recall : 50 % · Precision : 21,43 % · F1-score : 30 %** — seuil de décision fixé à **0,05** pour privilégier la détection des moteurs suspects, quitte à générer davantage de faux positifs orientés vers un contrôle complémentaire.
+
+### Limites reprises dans la page Data & Limitations
+
+- **Couverture catalogue produit** : 27 produits sur 177 testés (donnée fournie par le client, limite assumée dès la couche Gold).
+- **Table warranty** : recouvrement nul avec les moteurs testés — conservée en Silver pour traçabilité, non exploitée en BI.
+- **Features `_leak_*` exclues** : `_leak_nb_mesures`, `_leak_nb_programmes`, `_leak_duree_sec` décrivent le déroulement du test plutôt que l'état du moteur et auraient introduit une fuite de données si intégrées au modèle ou au rapport.
